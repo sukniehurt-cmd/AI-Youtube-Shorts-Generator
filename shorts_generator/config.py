@@ -21,6 +21,7 @@ GEMINI_FALLBACK_MODELS = [
     for m in os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3.1-flash-lite,gemini-flash-lite-latest").split(",")
     if m.strip()
 ]
+GEMINI_IMAGE_MODEL = os.getenv("GEMINI_IMAGE_MODEL", "gemini-3.1-flash-image")  # music shorts; needs a paid Gemini plan
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai").strip().lower()
 # whisper (faster-whisper, model downloaded from Hugging Face) or gemini (uses GEMINI_API_KEY)
 LOCAL_TRANSCRIBER = os.getenv("LOCAL_TRANSCRIBER", "whisper").strip().lower()

@@ -112,14 +112,17 @@ def _media_duration(media_path: str) -> float:
     return float(out or 0.0)
 
 
-GEMINI_TRANSCRIBE_PROMPT = """Transcribe the speech in this audio clip verbatim, in its original language{lang_hint}.
+GEMINI_TRANSCRIBE_PROMPT = """Transcribe the {what} in this audio clip verbatim, in its original language{lang_hint}.
 Split it into short segments of one sentence or phrase (roughly 2-10 seconds each).
 Return ONLY a JSON array, no prose: [{{"start": <seconds>, "end": <seconds>, "text": "<spoken text>"}}]
 Times are seconds from the start of this clip, as decimals. If there is no speech, return []."""
 
 
-def _transcribe_gemini(media_path: str, language: Optional[str]) -> Dict:
-    """Transcribe with Gemini audio understanding (no Whisper model download needed)."""
+def transcribe_gemini(media_path: str, language: Optional[str] = None, lyrics: bool = False) -> Dict:
+    """Transcribe with Gemini audio understanding (no Whisper model download needed).
+
+    lyrics=True asks for sung lyrics, one line per segment, ignoring instrumentals.
+    """
     from google.genai import types  # type: ignore
 
     from .llm import gemini_generate
@@ -143,7 +146,10 @@ def _transcribe_gemini(media_path: str, language: Optional[str]) -> Dict:
             raw = gemini_generate(
                 [
                     types.Part.from_bytes(data=Path(audio_path).read_bytes(), mime_type="audio/mp3"),
-                    GEMINI_TRANSCRIBE_PROMPT.format(lang_hint=lang_hint),
+                    GEMINI_TRANSCRIBE_PROMPT.format(
+                        what="sung lyrics (one lyric line per segment; skip instrumental parts)" if lyrics else "speech",
+                        lang_hint=lang_hint,
+                    ),
                 ],
                 {"temperature": 0.0, "response_mime_type": "application/json", "max_output_tokens": 32768},
             )
@@ -189,7 +195,7 @@ def transcribe_local(media_path: str, language: Optional[str] = None) -> Dict:
                 return cached
 
     if LOCAL_TRANSCRIBER == "gemini":
-        transcript = _transcribe_gemini(media_path, language)
+        transcript = transcribe_gemini(media_path, language)
         print(
             f"[transcribe/gemini] {len(transcript['segments'])} segments, "
             f"{transcript['duration']:.0f}s of audio",

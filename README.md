@@ -165,6 +165,21 @@ Local downloads are also cached in `LOCAL_OUTPUT_DIR` as
 `source_<youtube_id>.mp4` when the input is a YouTube URL. If that file already
 exists, the app skips `yt-dlp` and reuses the cached video.
 
+### Song → music-video short
+
+Turn a song file into a vertical music-video short: Gemini transcribes the lyrics,
+picks the catchiest section (usually the chorus) and directs a few visual scenes;
+each scene becomes an AI image with a slow camera move, with the lyrics burned in
+as captions.
+
+```bash
+python music_short.py song.mp3 --min-len 15 --max-len 45 --scenes 5 --language pl
+```
+
+Needs `GEMINI_API_KEY`. Scene images use `GEMINI_IMAGE_MODEL`
+(default `gemini-3.1-flash-image`), which requires a paid Gemini plan; without it
+the scenes fall back to animated colour gradients in the song's palette.
+
 ### Batch processing
 
 Create a `urls.txt` file with one URL per line, then:
