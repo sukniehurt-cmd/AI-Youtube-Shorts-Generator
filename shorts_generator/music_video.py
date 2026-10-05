@@ -5,12 +5,13 @@ Gemini pick the most catchy section (usually the chorus) and describe a few
 visual scenes, then renders a 9:16 video with the song's lyrics as captions and
 the audio section underneath. Each scene is, depending on `visuals`:
 
+- "stock":    a free stock video clip from Pexels matching the lyrics (default)
 - "veo":      a moving AI video clip (Veo, up to 8 s per scene)
 - "images":   an AI image with a slow camera move
 - "gradient": an animated colour gradient in the song's palette
 
-Each step falls back to the next one if it is unavailable (e.g. a free-tier
-Gemini key has no Veo or image quota).
+Each step falls back to the next one if it is unavailable (e.g. no Pexels
+key, or a free-tier Gemini key with no Veo or image quota).
 """
 import json
 import os
@@ -25,6 +26,7 @@ from .config import (
     GEMINI_IMAGE_MODEL,
     LOCAL_OUTPUT_DIR,
     MUSIC_VISUALS,
+    PEXELS_API_KEY,
     VEO_MODEL,
     require_gemini_key,
 )
@@ -44,11 +46,13 @@ Song duration: {duration:.1f}s. Timestamped lyrics:
    cinematic, vertical 9:16 composition, consistent style and characters across scenes, no text or letters in the image.
    Each scene is also used as a prompt for an AI video clip of up to 8 seconds, so describe the subject, setting
    and the motion in it (what moves, how the camera moves).
+   Also give each scene a "query": 2-4 plain English words to search a stock-footage library for a real clip
+   that fits (concrete and filmable, e.g. "neon city night", "woman dancing rain", "crowd concert hands").
 
 Return ONLY JSON:
 {{"start": <seconds>, "end": <seconds>, "title": "<short title>", "mood": "<a few words>",
   "palette": ["#rrggbb", "#rrggbb", "#rrggbb"],
-  "scenes": [{{"prompt": "<image prompt>"}}]}}"""
+  "scenes": [{{"prompt": "<image prompt>", "query": "<stock search words>"}}]}}"""
 
 
 def _run(cmd: List[str]) -> None:
@@ -130,6 +134,74 @@ class _ImageGenerator:
             self.reason = str(e).splitlines()[0][:200]
             print(f"[music/images] image generation unavailable, using gradients: {self.reason}", flush=True)
             return False
+
+
+class _StockFetcher:
+    """Free vertical stock clips from the Pexels API (https://www.pexels.com/api/)."""
+
+    SEARCH_URL = "https://api.pexels.com/videos/search"
+
+    def __init__(self) -> None:
+        self.enabled = bool(PEXELS_API_KEY)
+        self.reason = "" if self.enabled else "PEXELS_API_KEY is not set"
+        self.used_ids: set = set()
+
+    def _search(self, query: str, orientation: Optional[str]) -> List[Dict]:
+        import requests
+
+        params = {"query": query, "per_page": 15, "size": "medium"}
+        if orientation:
+            params["orientation"] = orientation
+        response = requests.get(
+            self.SEARCH_URL, params=params, headers={"Authorization": PEXELS_API_KEY}, timeout=30
+        )
+        response.raise_for_status()
+        return response.json().get("videos", [])
+
+    @staticmethod
+    def _best_file(video: Dict) -> Optional[Dict]:
+        files = [f for f in video.get("video_files", []) if f.get("link") and f.get("height")]
+        if not files:
+            return None
+        # Closest to 1080x1920 without going far above it (smaller downloads, same quality after scaling).
+        return min(files, key=lambda f: abs(int(f["height"]) - HEIGHT) + (5000 if int(f["height"]) > 2200 else 0))
+
+    def fetch(self, query: str, seconds: float, out_path: str) -> Optional[Dict]:
+        if not self.enabled or not query:
+            return None
+        import requests
+
+        try:
+            videos = self._search(query, "portrait") or self._search(query, None)
+            fresh = [v for v in videos if v.get("id") not in self.used_ids]
+            # Prefer clips long enough for the scene, then the search ranking.
+            fresh.sort(key=lambda v: float(v.get("duration", 0)) < seconds)
+            for video in fresh:
+                best = self._best_file(video)
+                if not best:
+                    continue
+                with requests.get(best["link"], stream=True, timeout=120) as r:
+                    r.raise_for_status()
+                    with open(out_path, "wb") as f:
+                        for chunk in r.iter_content(1 << 20):
+                            f.write(chunk)
+                self.used_ids.add(video.get("id"))
+                return {"id": video.get("id"), "url": video.get("url"), "author": (video.get("user") or {}).get("name")}
+            print(f"[music/stock] no Pexels clip for {query!r}", flush=True)
+            return None
+        except requests.HTTPError as e:
+            if e.response is not None and e.response.status_code in (401, 403):
+                self.enabled = False
+                self.reason = f"Pexels refused the key ({e.response.status_code})"
+                print(f"[music/stock] {self.reason}, falling back", flush=True)
+            else:
+                print(f"[music/stock] Pexels error for {query!r}: {e}", flush=True)
+            return None
+        except requests.RequestException as e:  # network blocked, timeouts, ...
+            self.enabled = False
+            self.reason = f"cannot reach Pexels: {str(e).splitlines()[0][:150]}"
+            print(f"[music/stock] {self.reason}, falling back", flush=True)
+            return None
 
 
 class _VideoGenerator:
@@ -251,7 +323,7 @@ def generate_music_short(
     out_path: Optional[str] = None,
     min_len: float = 15.0,
     max_len: float = 40.0,
-    num_scenes: int = 5,
+    num_scenes: Optional[int] = None,
     language: Optional[str] = None,
     captions: bool = True,
     visuals: Optional[str] = None,
@@ -270,14 +342,19 @@ def generate_music_short(
         transcript["duration"] = _duration(audio_path)
     print(f"[music] {len(transcript['segments'])} lyric lines, {transcript['duration']:.0f}s", flush=True)
 
+    visuals = (visuals or MUSIC_VISUALS).lower()
+    if num_scenes is None:
+        # Stock clips are free, so cut faster (~4 s per shot); AI clips are paid per second anyway.
+        num_scenes = max(3, round(max_len / 4)) if visuals == "stock" else 5
     plan = plan_music_short(transcript, min_len, max_len, num_scenes)
     start, end = plan["start"], plan["end"]
     length = end - start
     print(f"[music] section {start:.1f}s → {end:.1f}s: {plan.get('title')} ({plan.get('mood')})", flush=True)
 
-    visuals = (visuals or MUSIC_VISUALS).lower()
-    if visuals not in ("veo", "images", "gradient"):
-        raise ValueError(f"visuals must be veo, images or gradient, not {visuals!r}")
+    if visuals not in ("stock", "veo", "images", "gradient"):
+        raise ValueError(f"visuals must be stock, veo, images or gradient, not {visuals!r}")
+    stock = _StockFetcher()
+    stock.enabled = stock.enabled and visuals == "stock"
     videos = _VideoGenerator()
     videos.enabled = visuals == "veo"
     images = _ImageGenerator()
@@ -290,7 +367,13 @@ def generate_music_short(
             image = os.path.join(tmp, f"scene_{i:02d}.png")
             print(f"[music] scene {i + 1}/{len(plan['scenes'])}: {scene['prompt'][:80]}", flush=True)
             veo_clip = os.path.join(tmp, f"scene_{i:02d}_veo.mp4")
-            if videos.generate(scene["prompt"], scene_len, veo_clip):
+            stock_clip = os.path.join(tmp, f"scene_{i:02d}_stock.mp4")
+            source = stock.fetch(scene.get("query") or plan.get("mood", ""), scene_len, stock_clip)
+            if source:
+                _render_video_scene(stock_clip, scene_len, clip)
+                scene["visual"] = "stock"
+                scene["source"] = source
+            elif videos.generate(scene["prompt"], scene_len, veo_clip):
                 _render_video_scene(veo_clip, scene_len, clip)
                 scene["visual"] = "veo"
             elif images.generate(scene["prompt"], image):
@@ -303,8 +386,8 @@ def generate_music_short(
 
         concat_list = os.path.join(tmp, "scenes.txt")
         Path(concat_list).write_text("".join(f"file '{c}'\n" for c in clips))
-        visuals = os.path.join(tmp, "visuals.mp4")
-        _run(["ffmpeg", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", concat_list, "-c", "copy", visuals])
+        visuals_path = os.path.join(tmp, "visuals.mp4")
+        _run(["ffmpeg", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", concat_list, "-c", "copy", visuals_path])
 
         vf = "format=yuv420p"
         if captions:
@@ -314,7 +397,7 @@ def generate_music_short(
 
         fade_out = max(0.0, length - 1.5)
         _run([
-            "ffmpeg", "-loglevel", "error", "-y", "-i", visuals,
+            "ffmpeg", "-loglevel", "error", "-y", "-i", visuals_path,
             "-ss", f"{start:.3f}", "-t", f"{length:.3f}", "-i", audio_path,
             "-vf", vf,
             "-af", f"afade=t=in:d=0.5,afade=t=out:st={fade_out:.3f}:d=1.5",
@@ -328,6 +411,7 @@ def generate_music_short(
         "output": out_path,
         "plan": plan,
         "visuals": visuals,
+        "stock_error": stock.reason if visuals == "stock" else "",
         "video_error": videos.reason,
         "image_error": images.reason,
         "transcript": transcript,

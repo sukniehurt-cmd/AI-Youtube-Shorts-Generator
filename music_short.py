@@ -2,8 +2,9 @@
 
 Usage:
     python music_short.py song.mp3 --min-len 15 --max-len 45 --scenes 5
-Needs GEMINI_API_KEY in .env. Veo clips and AI images need a paid Gemini plan;
-without it the scenes fall back to animated colour gradients.
+Needs GEMINI_API_KEY in .env, plus a free PEXELS_API_KEY for stock clips (default).
+Veo clips and AI images need a paid Gemini plan. Scenes fall back to animated
+colour gradients when nothing else is available.
 """
 import argparse
 import json
@@ -21,11 +22,11 @@ def main() -> int:
     parser.add_argument("-o", "--output", default=None, help="Output mp4 (default: output/<song>_short.mp4)")
     parser.add_argument("--min-len", type=float, default=15.0, help="Shortest section in seconds (default 15)")
     parser.add_argument("--max-len", type=float, default=40.0, help="Longest section in seconds (default 40)")
-    parser.add_argument("--scenes", type=int, default=5, help="Number of visual scenes (default 5)")
+    parser.add_argument("--scenes", type=int, default=None, help="Number of visual scenes (default: ~4 s per shot for stock, 5 for AI)")
     parser.add_argument("--language", default=None, help="Lyrics language code, e.g. 'pl' (default: auto)")
     parser.add_argument(
-        "--visuals", choices=["veo", "images", "gradient"], default=None,
-        help="veo = moving AI clips (default), images = AI images with camera move, gradient = free fallback",
+        "--visuals", choices=["stock", "veo", "images", "gradient"], default=None,
+        help="stock = free Pexels clips (default), veo = moving AI clips, images = AI images with camera move, gradient = fallback",
     )
     parser.add_argument("--no-captions", action="store_true", help="Do not burn lyrics into the video")
     parser.add_argument("--output-json", default=None, help="Write the plan + lyrics to this JSON file")
@@ -51,7 +52,9 @@ def main() -> int:
     print(f"Short:    {result['output']}")
     print(f"Section:  {plan['start']:.1f}s → {plan['end']:.1f}s  ({plan.get('title')}, {plan.get('mood')})")
     kinds = [s.get("visual") for s in plan["scenes"]]
-    print(f"Scenes:   {kinds.count('veo')} Veo clips, {kinds.count('image')} AI images, {kinds.count('gradient')} gradients")
+    print(f"Scenes:   {kinds.count('stock')} stock clips, {kinds.count('veo')} Veo clips, {kinds.count('image')} AI images, {kinds.count('gradient')} gradients")
+    if result["stock_error"]:
+        print(f"Stock:    unavailable ({result['stock_error']})")
     if result["video_error"]:
         print(f"Veo:      unavailable ({result['video_error']})")
     if result["image_error"]:
