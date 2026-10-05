@@ -2,8 +2,8 @@
 
 Usage:
     python music_short.py song.mp3 --min-len 15 --max-len 45 --scenes 5
-Needs GEMINI_API_KEY in .env (image scenes need a paid Gemini plan; otherwise
-the scenes fall back to animated colour gradients).
+Needs GEMINI_API_KEY in .env. Veo clips and AI images need a paid Gemini plan;
+without it the scenes fall back to animated colour gradients.
 """
 import argparse
 import json
@@ -20,9 +20,13 @@ def main() -> int:
     parser.add_argument("audio", help="Path to the song (mp3, wav, m4a, ...)")
     parser.add_argument("-o", "--output", default=None, help="Output mp4 (default: output/<song>_short.mp4)")
     parser.add_argument("--min-len", type=float, default=15.0, help="Shortest section in seconds (default 15)")
-    parser.add_argument("--max-len", type=float, default=45.0, help="Longest section in seconds (default 45)")
+    parser.add_argument("--max-len", type=float, default=40.0, help="Longest section in seconds (default 40)")
     parser.add_argument("--scenes", type=int, default=5, help="Number of visual scenes (default 5)")
     parser.add_argument("--language", default=None, help="Lyrics language code, e.g. 'pl' (default: auto)")
+    parser.add_argument(
+        "--visuals", choices=["veo", "images", "gradient"], default=None,
+        help="veo = moving AI clips (default), images = AI images with camera move, gradient = free fallback",
+    )
     parser.add_argument("--no-captions", action="store_true", help="Do not burn lyrics into the video")
     parser.add_argument("--output-json", default=None, help="Write the plan + lyrics to this JSON file")
     args = parser.parse_args()
@@ -36,6 +40,7 @@ def main() -> int:
             num_scenes=args.scenes,
             language=args.language,
             captions=not args.no_captions,
+            visuals=args.visuals,
         )
     except Exception as e:
         print(f"\nFAILED: {e}", file=sys.stderr)
@@ -45,9 +50,12 @@ def main() -> int:
     print("\n" + "=" * 72)
     print(f"Short:    {result['output']}")
     print(f"Section:  {plan['start']:.1f}s → {plan['end']:.1f}s  ({plan.get('title')}, {plan.get('mood')})")
-    print(f"Scenes:   {sum(1 for s in plan['scenes'] if s.get('image'))}/{len(plan['scenes'])} AI images")
+    kinds = [s.get("visual") for s in plan["scenes"]]
+    print(f"Scenes:   {kinds.count('veo')} Veo clips, {kinds.count('image')} AI images, {kinds.count('gradient')} gradients")
+    if result["video_error"]:
+        print(f"Veo:      unavailable ({result['video_error']})")
     if result["image_error"]:
-        print(f"Images:   fell back to gradients ({result['image_error']})")
+        print(f"Images:   unavailable ({result['image_error']})")
     if args.output_json:
         with open(args.output_json, "w") as f:
             json.dump(result, f, indent=2, ensure_ascii=False)

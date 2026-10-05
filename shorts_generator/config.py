@@ -22,6 +22,8 @@ GEMINI_FALLBACK_MODELS = [
     if m.strip()
 ]
 GEMINI_IMAGE_MODEL = os.getenv("GEMINI_IMAGE_MODEL", "gemini-3.1-flash-image")  # music shorts; needs a paid Gemini plan
+VEO_MODEL = os.getenv("VEO_MODEL", "veo-3.1-fast-generate-preview")  # music shorts; needs a paid Gemini plan
+MUSIC_VISUALS = os.getenv("MUSIC_VISUALS", "veo").strip().lower()  # veo / images / gradient
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai").strip().lower()
 # whisper (faster-whisper, model downloaded from Hugging Face) or gemini (uses GEMINI_API_KEY)
 LOCAL_TRANSCRIBER = os.getenv("LOCAL_TRANSCRIBER", "whisper").strip().lower()

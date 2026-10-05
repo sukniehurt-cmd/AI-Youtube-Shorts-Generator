@@ -169,16 +169,16 @@ exists, the app skips `yt-dlp` and reuses the cached video.
 
 Turn a song file into a vertical music-video short: Gemini transcribes the lyrics,
 picks the catchiest section (usually the chorus) and directs a few visual scenes;
-each scene becomes an AI image with a slow camera move, with the lyrics burned in
-as captions.
+each scene becomes a moving AI video clip (Veo), with the lyrics burned in as captions.
 
 ```bash
-python music_short.py song.mp3 --min-len 15 --max-len 45 --scenes 5 --language pl
+python music_short.py song.mp3 --max-len 40 --scenes 5 --language pl
+python music_short.py song.mp3 --visuals images   # cheaper: AI images with a camera move
 ```
 
-Needs `GEMINI_API_KEY`. Scene images use `GEMINI_IMAGE_MODEL`
-(default `gemini-3.1-flash-image`), which requires a paid Gemini plan; without it
-the scenes fall back to animated colour gradients in the song's palette.
+`--visuals` / `MUSIC_VISUALS`: `veo` (default, `VEO_MODEL`, up to 8 s per scene),
+`images` (`GEMINI_IMAGE_MODEL`) or `gradient`. Veo and image models need a paid Gemini
+plan; each scene falls back to the next option when one is unavailable.
 
 ### Batch processing
 

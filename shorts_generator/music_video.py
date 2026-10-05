@@ -2,21 +2,32 @@
 
 Takes an audio file (mp3/wav/...), transcribes the lyrics with Gemini, lets
 Gemini pick the most catchy section (usually the chorus) and describe a few
-visual scenes, then renders a 9:16 video: one AI image per scene with a slow
-camera move, the song's lyrics as captions, and the audio section underneath.
+visual scenes, then renders a 9:16 video with the song's lyrics as captions and
+the audio section underneath. Each scene is, depending on `visuals`:
 
-If image generation is unavailable (e.g. a free-tier Gemini key), each scene
-falls back to an animated colour gradient in the song's palette.
+- "veo":      a moving AI video clip (Veo, up to 8 s per scene)
+- "images":   an AI image with a slow camera move
+- "gradient": an animated colour gradient in the song's palette
+
+Each step falls back to the next one if it is unavailable (e.g. a free-tier
+Gemini key has no Veo or image quota).
 """
 import json
 import os
 import re
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from .config import GEMINI_IMAGE_MODEL, LOCAL_OUTPUT_DIR, require_gemini_key
+from .config import (
+    GEMINI_IMAGE_MODEL,
+    LOCAL_OUTPUT_DIR,
+    MUSIC_VISUALS,
+    VEO_MODEL,
+    require_gemini_key,
+)
 from .local.llm import call_gemini_llm
 from .local.transcriber import transcribe_gemini
 
@@ -31,6 +42,8 @@ Song duration: {duration:.1f}s. Timestamped lyrics:
    Start on a line start, end on a line end. If there are no lyrics, pick by position (e.g. the first chorus is often around 25-35% into the song).
 2. Describe exactly {num_scenes} visual scenes that follow the lyrics of that section in order, as image-generation prompts:
    cinematic, vertical 9:16 composition, consistent style and characters across scenes, no text or letters in the image.
+   Each scene is also used as a prompt for an AI video clip of up to 8 seconds, so describe the subject, setting
+   and the motion in it (what moves, how the camera moves).
 
 Return ONLY JSON:
 {{"start": <seconds>, "end": <seconds>, "title": "<short title>", "mood": "<a few words>",
@@ -119,6 +132,61 @@ class _ImageGenerator:
             return False
 
 
+class _VideoGenerator:
+    """Veo text-to-video that disables itself after the first hard failure."""
+
+    def __init__(self) -> None:
+        self.enabled = True
+        self.reason = ""
+
+    def generate(self, prompt: str, seconds: float, out_path: str, timeout: float = 600) -> bool:
+        if not self.enabled:
+            return False
+        try:
+            from google import genai  # type: ignore
+
+            client = genai.Client(api_key=require_gemini_key())
+            operation = client.models.generate_videos(
+                model=VEO_MODEL,
+                prompt=f"{prompt}. Smooth cinematic motion, music video style, no text, no captions.",
+                config={
+                    "aspect_ratio": "9:16",
+                    "duration_seconds": 8 if seconds > 6 else (6 if seconds > 4 else 4),
+                    "negative_prompt": "text, letters, subtitles, watermark",
+                },
+            )
+            deadline = time.time() + timeout
+            while not operation.done:
+                if time.time() > deadline:
+                    raise TimeoutError(f"Veo did not finish within {timeout:.0f}s")
+                time.sleep(10)
+                operation = client.operations.get(operation)
+            if operation.error:
+                raise RuntimeError(f"Veo error: {operation.error}")
+            videos = operation.response.generated_videos if operation.response else None
+            if not videos:
+                raise RuntimeError("Veo returned no video (possibly blocked by safety filters)")
+            client.files.download(file=videos[0].video)
+            videos[0].video.save(out_path)
+            return True
+        except Exception as e:  # quota, model access, safety block, timeout, ...
+            self.enabled = False
+            self.reason = str(e).splitlines()[0][:200]
+            print(f"[music/veo] video generation unavailable, falling back: {self.reason}", flush=True)
+            return False
+
+
+def _render_video_scene(video: str, seconds: float, out: str) -> None:
+    # Fit to 9:16, drop Veo's own audio, and hold the last frame if the clip is shorter than the scene.
+    _run([
+        "ffmpeg", "-loglevel", "error", "-y", "-i", video,
+        "-vf",
+        f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,crop={WIDTH}:{HEIGHT},"
+        f"fps={FPS},tpad=stop_mode=clone:stop_duration={seconds:.3f},format=yuv420p",
+        "-an", "-t", f"{seconds:.3f}", "-c:v", "libx264", "-preset", "veryfast", out,
+    ])
+
+
 def _render_image_scene(image: str, seconds: float, index: int, out: str) -> None:
     frames = max(1, int(round(seconds * FPS)))
     # Alternate slow zoom-in / zoom-out so cuts feel like camera moves.
@@ -182,10 +250,11 @@ def generate_music_short(
     audio_path: str,
     out_path: Optional[str] = None,
     min_len: float = 15.0,
-    max_len: float = 45.0,
+    max_len: float = 40.0,
     num_scenes: int = 5,
     language: Optional[str] = None,
     captions: bool = True,
+    visuals: Optional[str] = None,
 ) -> Dict:
     """Render one vertical music-video short from a song file. Returns the plan + output path."""
     audio_path = str(Path(audio_path).expanduser())
@@ -206,7 +275,13 @@ def generate_music_short(
     length = end - start
     print(f"[music] section {start:.1f}s → {end:.1f}s: {plan.get('title')} ({plan.get('mood')})", flush=True)
 
+    visuals = (visuals or MUSIC_VISUALS).lower()
+    if visuals not in ("veo", "images", "gradient"):
+        raise ValueError(f"visuals must be veo, images or gradient, not {visuals!r}")
+    videos = _VideoGenerator()
+    videos.enabled = visuals == "veo"
     images = _ImageGenerator()
+    images.enabled = visuals in ("veo", "images")
     scene_len = length / len(plan["scenes"])
     with tempfile.TemporaryDirectory() as tmp:
         clips = []
@@ -214,12 +289,16 @@ def generate_music_short(
             clip = os.path.join(tmp, f"scene_{i:02d}.mp4")
             image = os.path.join(tmp, f"scene_{i:02d}.png")
             print(f"[music] scene {i + 1}/{len(plan['scenes'])}: {scene['prompt'][:80]}", flush=True)
-            if images.generate(scene["prompt"], image):
+            veo_clip = os.path.join(tmp, f"scene_{i:02d}_veo.mp4")
+            if videos.generate(scene["prompt"], scene_len, veo_clip):
+                _render_video_scene(veo_clip, scene_len, clip)
+                scene["visual"] = "veo"
+            elif images.generate(scene["prompt"], image):
                 _render_image_scene(image, scene_len, i, clip)
-                scene["image"] = True
+                scene["visual"] = "image"
             else:
                 _render_gradient_scene(plan["palette"], scene_len, i, clip)
-                scene["image"] = False
+                scene["visual"] = "gradient"
             clips.append(clip)
 
         concat_list = os.path.join(tmp, "scenes.txt")
@@ -248,7 +327,8 @@ def generate_music_short(
         "audio": audio_path,
         "output": out_path,
         "plan": plan,
-        "images_used": images.enabled,
+        "visuals": visuals,
+        "video_error": videos.reason,
         "image_error": images.reason,
         "transcript": transcript,
     }
