@@ -99,7 +99,7 @@ Don't want to self-host? The [AI Clipping API](https://muapi.ai/playground/ai-cl
    OPENAI_API_KEY=your_openai_key_here
    OPENAI_MODEL=gpt-4o-mini          # optional, default gpt-4o-mini
    GEMINI_API_KEY=your_gemini_key_here
-   GEMINI_MODEL=gemini-2.5-flash      # optional, default gemini-2.5-flash
+   GEMINI_MODEL=gemini-3.5-flash-lite      # optional, default gemini-3.5-flash-lite
    LOCAL_WHISPER_MODEL=base          # tiny / base / small / medium / large-v3
    LOCAL_WHISPER_DEVICE=auto         # auto / cpu / cuda
    LOCAL_OUTPUT_DIR=output           # where local mp4s land
@@ -188,7 +188,7 @@ xargs -a urls.txt -I{} python main.py "{}"
 |---|---|---|
 | Download | MuAPI `/youtube-download` | `yt-dlp` for remote URLs, direct file path for local inputs |
 | Transcription | MuAPI `/openai-whisper` | `faster-whisper` (CPU or CUDA) |
-| Highlight LLM | MuAPI `gpt-5-mini` | `LLM_PROVIDER=openai` uses OpenAI (`gpt-4o-mini` by default), `LLM_PROVIDER=gemini` uses Gemini (`gemini-2.5-flash` by default) |
+| Highlight LLM | MuAPI `gpt-5-mini` | `LLM_PROVIDER=openai` uses OpenAI (`gpt-4o-mini` by default), `LLM_PROVIDER=gemini` uses Gemini (`gemini-3.5-flash-lite` by default) |
 | Vertical crop | MuAPI `/autocrop` | `ffmpeg` + OpenCV face tracking |
 | Output | hosted URLs | local mp4 paths |
 | Required keys | `MUAPI_API_KEY` | `OPENAI_API_KEY` or `GEMINI_API_KEY` (+ `ffmpeg` on PATH) |
