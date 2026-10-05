@@ -3,12 +3,21 @@
 Reads a local media file and returns the same shape the highlight generator
 expects: {duration, segments[start, end, text]}.
 """
+import json
 import os
 import re
+import subprocess
+import tempfile
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
-from ..config import LOCAL_OUTPUT_DIR, LOCAL_WHISPER_DEVICE, LOCAL_WHISPER_MODEL
+from ..config import (
+    GEMINI_TRANSCRIBE_CHUNK_SECONDS,
+    LOCAL_OUTPUT_DIR,
+    LOCAL_TRANSCRIBER,
+    LOCAL_WHISPER_DEVICE,
+    LOCAL_WHISPER_MODEL,
+)
 
 
 def _transcript_cache_path(media_path: str) -> Path:
@@ -95,6 +104,69 @@ def _resolve_device() -> str:
     return "cpu"
 
 
+def _media_duration(media_path: str) -> float:
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", media_path],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    return float(out or 0.0)
+
+
+GEMINI_TRANSCRIBE_PROMPT = """Transcribe the speech in this audio clip verbatim, in its original language{lang_hint}.
+Split it into short segments of one sentence or phrase (roughly 2-10 seconds each).
+Return ONLY a JSON array, no prose: [{{"start": <seconds>, "end": <seconds>, "text": "<spoken text>"}}]
+Times are seconds from the start of this clip, as decimals. If there is no speech, return []."""
+
+
+def _transcribe_gemini(media_path: str, language: Optional[str]) -> Dict:
+    """Transcribe with Gemini audio understanding (no Whisper model download needed)."""
+    from google.genai import types  # type: ignore
+
+    from .llm import gemini_generate
+
+    duration = _media_duration(media_path)
+    chunk = max(60.0, GEMINI_TRANSCRIBE_CHUNK_SECONDS)
+    lang_hint = f" (language code: {language})" if language else ""
+    segments: List[Dict] = []
+
+    with tempfile.TemporaryDirectory() as tmp:
+        offset = 0.0
+        while offset < duration:
+            length = min(chunk, duration - offset)
+            audio_path = os.path.join(tmp, f"chunk_{int(offset)}.mp3")
+            subprocess.run(
+                ["ffmpeg", "-loglevel", "error", "-y", "-ss", f"{offset:.3f}", "-t", f"{length:.3f}",
+                 "-i", media_path, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "32k", audio_path],
+                check=True,
+            )
+            print(f"[transcribe/gemini] {offset:.0f}s-{offset + length:.0f}s of {duration:.0f}s", flush=True)
+            raw = gemini_generate(
+                [
+                    types.Part.from_bytes(data=Path(audio_path).read_bytes(), mime_type="audio/mp3"),
+                    GEMINI_TRANSCRIBE_PROMPT.format(lang_hint=lang_hint),
+                ],
+                {"temperature": 0.0, "response_mime_type": "application/json", "max_output_tokens": 32768},
+            )
+            try:
+                items = json.loads(raw)
+            except json.JSONDecodeError:
+                match = re.search(r"\[.*\]", raw, re.DOTALL)
+                items = json.loads(match.group(0)) if match else []
+            for item in items if isinstance(items, list) else []:
+                try:
+                    start = float(item["start"]) + offset
+                    end = float(item["end"]) + offset
+                except (KeyError, TypeError, ValueError):
+                    continue
+                text = str(item.get("text", "")).strip()
+                if text and end > start:
+                    segments.append({"start": start, "end": min(end, duration), "text": text})
+            offset += length
+
+    segments.sort(key=lambda seg: seg["start"])
+    return {"duration": duration, "segments": segments}
+
+
 def transcribe_local(media_path: str, language: Optional[str] = None) -> Dict:
     """Run faster-whisper on a local file path, caching the result as .srt."""
     cache_path = _transcript_cache_path(media_path)
@@ -115,6 +187,18 @@ def transcribe_local(media_path: str, language: Optional[str] = None) -> Dict:
                     flush=True,
                 )
                 return cached
+
+    if LOCAL_TRANSCRIBER == "gemini":
+        transcript = _transcribe_gemini(media_path, language)
+        print(
+            f"[transcribe/gemini] {len(transcript['segments'])} segments, "
+            f"{transcript['duration']:.0f}s of audio",
+            flush=True,
+        )
+        if transcript["segments"]:
+            cache_path = _write_srt_cache(media_path, transcript)
+            print(f"[transcribe/gemini] wrote cache: {cache_path}", flush=True)
+        return transcript
 
     try:
         from faster_whisper import WhisperModel  # type: ignore

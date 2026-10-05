@@ -15,7 +15,16 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+# Extra Gemini models tried in order when the primary one is overloaded (503/429).
+GEMINI_FALLBACK_MODELS = [
+    m.strip()
+    for m in os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3.1-flash-lite,gemini-flash-lite-latest").split(",")
+    if m.strip()
+]
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai").strip().lower()
+# whisper (faster-whisper, model downloaded from Hugging Face) or gemini (uses GEMINI_API_KEY)
+LOCAL_TRANSCRIBER = os.getenv("LOCAL_TRANSCRIBER", "whisper").strip().lower()
+GEMINI_TRANSCRIBE_CHUNK_SECONDS = float(os.getenv("GEMINI_TRANSCRIBE_CHUNK_SECONDS", "600"))
 LOCAL_WHISPER_MODEL = os.getenv("LOCAL_WHISPER_MODEL", "base")
 LOCAL_WHISPER_DEVICE = os.getenv("LOCAL_WHISPER_DEVICE", "auto")  # auto / cpu / cuda
 LOCAL_OUTPUT_DIR = os.getenv("LOCAL_OUTPUT_DIR", "output")

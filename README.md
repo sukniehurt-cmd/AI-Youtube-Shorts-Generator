@@ -100,6 +100,8 @@ Don't want to self-host? The [AI Clipping API](https://muapi.ai/playground/ai-cl
    OPENAI_MODEL=gpt-4o-mini          # optional, default gpt-4o-mini
    GEMINI_API_KEY=your_gemini_key_here
    GEMINI_MODEL=gemini-3.5-flash-lite      # optional, default gemini-3.5-flash-lite
+   GEMINI_FALLBACK_MODELS=gemini-3.1-flash-lite,gemini-flash-lite-latest  # used when the main model is overloaded
+   LOCAL_TRANSCRIBER=whisper         # whisper (faster-whisper) or gemini (no local model, uses GEMINI_API_KEY)
    LOCAL_WHISPER_MODEL=base          # tiny / base / small / medium / large-v3
    LOCAL_WHISPER_DEVICE=auto         # auto / cpu / cuda
    LOCAL_OUTPUT_DIR=output           # where local mp4s land
